@@ -1,20 +1,23 @@
 // Zentrale Tuning-Parameter für die Arcade-Fahrphysik
 const PHYSICS = {
-    gravity: 640,
-    maxDriveSpeed: 540,
-    maxTotalSpeed: 740,
-    driveAccel: 1750,
-    brakeAccel: 2200,
-    suspensionTravel: 8.5,
-    springStiffness: 235,
-    springDamping: 26,
-    tireGrip: 1.75,          // Reibungs-Koeffizient der Reifen (Wheelies & Wandfahrten)
-    wallDownforce: 0.55,     // Schwung-Anpressdruck in Kurven & Steilwänden
-    airTorque: 34,           // Dreh-Impuls in der Luft für saubere Flips
-    airSpinDamping: 0.04,    // Dämpfung beim Loslassen in der Luft
-    chassisBounce: 0.18,
-    carRestitution: 0.26,    // Geringer Abprall -> Autos schieben & klettern übereinander
-    carClimbGrip: 0.55       // Reifen-Traktion auf dem Gegner zum Aushebeln/Überfahren
+    gravity: 660,
+    maxDriveSpeed: 580,
+    maxTotalSpeed: 780,
+    driveAccel: 2350,        // Knackiger Antritt nach vorne
+    brakeAccel: 2800,        // Direktes Abbremsen & Richtungswechsel
+    wheelieTorque: 19500,    // Schnelles, knackiges Aufsteigen beim Gasgeben
+    wheelieMaxAngle: 0.56,   // ~32° natürlicher Wheelie-Winkel auf der Geraden
+    suspensionTravel: 6.5,
+    springStiffness: 360,    // Straffes Fahrwerk ohne Nachwippen
+    springDamping: 44,       // Kritische Dämpfung für saubere Landungen
+    tireGrip: 2.1,
+    curveRadius: 235,        // Arena-Kurvenradius für echte Zentripetalkraft (v² / R)
+    airSpinAccel: 13.5,      // Kontrollierte Drehbeschleunigung in der Luft
+    airMaxSpin: 3.3,         // Angenehme maximale Drehgeschwindigkeit in der Luft
+    airSpinDamping: 0.03,    // Schnelles Abstoppen der Drehung beim Loslassen
+    chassisBounce: 0.14,
+    carRestitution: 0.18,    // Kein Flummi-Abprall -> Autos schieben & hebeln sich aus
+    carClimbGrip: 0.72       // Reifen-Traktion auf dem Gegner zum Hochklettern & Überfahren
 };
 
 function getWaterWaveY(x) {
@@ -34,6 +37,12 @@ function getMoveDir(car) {
     return (right ? 1 : 0) - (left ? 1 : 0);
 }
 
+function normalizeAngle(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+}
+
 function stepPhysics(dt) {
     const substeps = 8;
     const subDt = (dt * state.timeScale) / substeps;
@@ -44,11 +53,13 @@ function stepPhysics(dt) {
         for (const car of cars) {
             const moveDir = getMoveDir(car);
             car.vy += PHYSICS.gravity * subDt;
-            car.vx *= Math.pow(0.90, subDt);
-            car.vy *= Math.pow(0.95, subDt);
-            car.angVel *= Math.pow(0.32, subDt);
+            car.vx *= Math.pow(0.92, subDt);
+            car.vy *= Math.pow(0.96, subDt);
 
             let groundedWheels = 0;
+            let avgNy = 0;
+            let avgNx = 0;
+
             for (const ws of wheelSpecs) {
                 const mount = car.localToWorld(ws.lx, car.wheelYOffset - PHYSICS.suspensionTravel);
                 const compression = (PHYSICS.suspensionTravel + car.wheelRadius) - getWorldSDF(mount.x, mount.y);
@@ -56,13 +67,16 @@ function stepPhysics(dt) {
                 if (compression > 0) {
                     groundedWheels++;
                     const n = getWorldNormal(mount.x, mount.y);
+                    avgNx += n.x;
+                    avgNy += n.y;
+
                     const comp = Math.min(PHYSICS.suspensionTravel, compression);
                     if (ws.isRear) car.rearComp = comp; else car.frontComp = comp;
 
                     const overPen = compression - PHYSICS.suspensionTravel;
                     if (overPen > 0) {
-                        car.x += n.x * overPen * 0.8;
-                        car.y += n.y * overPen * 0.8;
+                        car.x += n.x * overPen * 0.85;
+                        car.y += n.y * overPen * 0.85;
                     }
 
                     const contact = car.localToWorld(ws.lx, car.wheelYOffset - comp);
@@ -72,40 +86,64 @@ function stepPhysics(dt) {
                     const tx = -n.y, ty = n.x;
                     const vt = vpx * tx + vpy * ty;
 
-                    // 1. Feder-Dämpfer-Normalkraft + geschwindigkeitsabhängiger Kurven-Anpressdruck
-                    const wallLoad = Math.max(0, 1 - Math.abs(n.y)) * Math.abs(vt) * PHYSICS.wallDownforce;
-                    const normalImp = Math.max(0, (comp * PHYSICS.springStiffness + wallLoad - vn * PHYSICS.springDamping) * subDt);
+                    // 1. Straffes Feder-Dämpfer-Fahrwerk + physikalische Zentripetalkraft (v² / R) in Wandkurven
+                    const curveFactor = Math.max(0, 1 - Math.abs(n.y));
+                    const centripetalForce = curveFactor * ((vt * vt) / PHYSICS.curveRadius) * car.mass;
+                    const normalForce = comp * PHYSICS.springStiffness + centripetalForce - vn * PHYSICS.springDamping;
+                    const normalImp = Math.max(0, normalForce * subDt);
                     applyImpulse(car, n.x * normalImp, n.y * normalImp, rx, ry);
 
-                    // 2. Tangentialer Antrieb / Bremsen -> erzeugt über Hebelarm (rx, ry) natürliche Wheelies!
+                    // 2. Knackiger Rad-Antrieb & Bremsen
                     let desiredJt = 0;
                     if (moveDir !== 0) {
-                        if (vt * moveDir < -20) {
+                        if (vt * moveDir < -18) {
                             const maxBrake = PHYSICS.brakeAccel * subDt;
-                            desiredJt = Math.max(-maxBrake, Math.min(maxBrake, -vt * 0.65));
+                            desiredJt = Math.max(-maxBrake, Math.min(maxBrake, -vt * 0.75));
                         } else {
-                            const torqueCurve = Math.max(0.15, 1 - Math.abs(vt) / PHYSICS.maxDriveSpeed);
-                            desiredJt = moveDir * PHYSICS.driveAccel * torqueCurve * subDt;
+                            const accelCurve = Math.max(0.18, 1 - Math.abs(vt) / PHYSICS.maxDriveSpeed);
+                            desiredJt = moveDir * PHYSICS.driveAccel * accelCurve * subDt;
                         }
-                        car.wheelRot += moveDir * 12.5 * subDt;
+                        car.wheelRot += moveDir * 14.0 * subDt;
                     } else {
-                        desiredJt = -vt * 4.2 * subDt;
+                        desiredJt = -vt * 4.5 * subDt;
                         car.wheelRot += vt * 0.032 * subDt;
                     }
 
-                    const maxTraction = normalImp * PHYSICS.tireGrip + 22 * subDt;
+                    const maxTraction = normalImp * PHYSICS.tireGrip + 34 * subDt;
                     const jt = Math.max(-maxTraction, Math.min(maxTraction, desiredJt));
                     applyImpulse(car, tx * jt, ty * jt, rx, ry);
                 } else {
-                    if (ws.isRear) car.rearComp *= 0.78; else car.frontComp *= 0.78;
-                    if (moveDir !== 0) car.wheelRot += moveDir * 8.5 * subDt;
+                    if (ws.isRear) car.rearComp *= 0.72; else car.frontComp *= 0.72;
+                    if (moveDir !== 0) car.wheelRot += moveDir * 9.0 * subDt;
                 }
             }
 
-            // 3. Luft-Steuerung: Knackige Rotation zum Ausrichten & Flippen
-            if (groundedWheels === 0) {
-                if (moveDir !== 0) car.angVel += -moveDir * PHYSICS.airTorque * subDt;
-                else car.angVel *= Math.pow(PHYSICS.airSpinDamping, subDt);
+            if (groundedWheels > 0) {
+                car.angVel *= Math.pow(0.18, subDt);
+
+                // Schnelles, knackiges Wheelie-Drehmoment beim Gasgeben auf dem Boden (bis zum natürlichen Kipppunkt)
+                const nLen = Math.hypot(avgNx, avgNy) || 1;
+                const nx = avgNx / nLen, ny = avgNy / nLen;
+                const surfaceAngle = Math.atan2(nx, -ny);
+                const relAngle = normalizeAngle(car.angle - surfaceAngle);
+                const floorFlatness = Math.max(0, -ny);
+
+                if (moveDir !== 0 && floorFlatness > 0.65) {
+                    const targetTilt = -moveDir * PHYSICS.wheelieMaxAngle * floorFlatness;
+                    const tiltRoom = (targetTilt - relAngle) * (-moveDir);
+                    if (tiltRoom > 0) {
+                        const boost = Math.min(1, tiltRoom / 0.25);
+                        car.angVel += (-moveDir * PHYSICS.wheelieTorque * boost * subDt) / car.inertia;
+                    }
+                }
+            } else {
+                // 3. Kontrollierte, nicht zu schnelle Luft-Drehung
+                if (moveDir !== 0) {
+                    car.angVel += -moveDir * PHYSICS.airSpinAccel * subDt;
+                    car.angVel = Math.max(-PHYSICS.airMaxSpin, Math.min(PHYSICS.airMaxSpin, car.angVel));
+                } else {
+                    car.angVel *= Math.pow(PHYSICS.airSpinDamping, subDt);
+                }
             }
 
             const speed = Math.hypot(car.vx, car.vy);
@@ -113,7 +151,7 @@ function stepPhysics(dt) {
                 car.vx = (car.vx / speed) * PHYSICS.maxTotalSpeed;
                 car.vy = (car.vy / speed) * PHYSICS.maxTotalSpeed;
             }
-            car.angVel = Math.max(-8.0, Math.min(8.0, car.angVel));
+            car.angVel = Math.max(-6.5, Math.min(6.5, car.angVel));
             car.x += car.vx * subDt;
             car.y += car.vy * subDt;
             car.angle += car.angVel * subDt;
@@ -137,7 +175,7 @@ function stepPhysics(dt) {
 
                         const tx = -n.y, ty = n.x;
                         const vt = vpx * tx + vpy * ty;
-                        const jt = Math.max(-j * 0.35, Math.min(j * 0.35, -vt * 0.25));
+                        const jt = Math.max(-j * 0.3, Math.min(j * 0.3, -vt * 0.25));
                         applyImpulse(car, tx * jt, ty * jt, rx, ry);
                     }
                 }
@@ -199,10 +237,10 @@ function resolveCarToCarCollisions() {
 
                 // Tangentialer Reifengrip beim Aufeinanderfahren -> hebt den Gegner aus & lässt Räder hochklettern
                 const tx = -ny, ty = nx;
-                const wheelDriveDiff = ((cA.isWheel ? dirRed : 0) - (cB.isWheel ? dirBlue : 0)) * 180;
+                const wheelDriveDiff = ((cA.isWheel ? dirRed : 0) - (cB.isWheel ? dirBlue : 0)) * 220;
                 const vt = (rvx * tx + rvy * ty) - wheelDriveDiff;
-                const maxJt = j * PHYSICS.carClimbGrip + 12;
-                const jt = Math.max(-maxJt, Math.min(maxJt, -vt * 0.35));
+                const maxJt = j * PHYSICS.carClimbGrip + 16;
+                const jt = Math.max(-maxJt, Math.min(maxJt, -vt * 0.42));
                 applyImpulse(carRed, -tx * jt, -ty * jt, rAx, rAy);
                 applyImpulse(carBlue, tx * jt, ty * jt, rBx, rBy);
 
