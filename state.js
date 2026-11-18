@@ -4,13 +4,7 @@ const ctx = canvas.getContext('2d', { alpha: false });
 const GAME_W = 1280;
 const GAME_H = 720;
 
-const viewTransform = {
-    scale: 1,
-    offsetX: 0,
-    offsetY: 0,
-    rotation: 0,
-    flip180: false
-};
+const viewTransform = { scale: 1, offsetX: 0, offsetY: 0, rotation: 0, flip180: false };
 
 const state = {
     scoreRed: 0,
@@ -27,20 +21,8 @@ const state = {
     isDraw: false
 };
 
-const inputs = {
-    redLeft: false,
-    redRight: false,
-    blueLeft: false,
-    blueRight: false
-};
-
-const keyState = {
-    redLeft: false,
-    redRight: false,
-    blueLeft: false,
-    blueRight: false
-};
-
+const inputs = { redLeft: false, redRight: false, blueLeft: false, blueRight: false };
+const keyState = { redLeft: false, redRight: false, blueLeft: false, blueRight: false };
 const activePointers = new Map();
 
 const controlButtons = [
@@ -57,18 +39,14 @@ const uiButtons = {
 };
 
 class SoundManager {
-    constructor() {
-        this.ctx = null;
-    }
+    constructor() { this.ctx = null; }
 
     init() {
         if (!this.ctx) {
             const AudioCtx = window.AudioContext || window.webkitAudioContext;
             if (AudioCtx) this.ctx = new AudioCtx();
         }
-        if (this.ctx && this.ctx.state === 'suspended') {
-            this.ctx.resume();
-        }
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
     }
 
     playTone(freq, type, duration, vol = 0.12, slideFreq = null) {
@@ -95,8 +73,7 @@ class SoundManager {
     }
 
     playBump(intensity = 1) {
-        const vol = Math.min(0.2, 0.04 * intensity);
-        this.playTone(130, 'triangle', 0.09, vol, 55);
+        this.playTone(130, 'triangle', 0.09, Math.min(0.2, 0.04 * intensity), 55);
     }
 
     playKO() {
@@ -107,7 +84,6 @@ class SoundManager {
 }
 
 const sound = new SoundManager();
-
 const smokeParticles = [];
 const starParticles = [];
 
@@ -129,8 +105,7 @@ function spawnWaterSplash(x, y) {
         const angle = -Math.PI * (0.15 + Math.random() * 0.7);
         const speed = 90 + Math.random() * 190;
         smokeParticles.push({
-            x: x + (Math.random() - 0.5) * 20,
-            y,
+            x: x + (Math.random() - 0.5) * 20, y,
             vx: Math.cos(angle) * speed,
             vy: Math.sin(angle) * speed,
             r: 4 + Math.random() * 3,
@@ -166,10 +141,7 @@ function updateParticles(dt) {
     for (let i = smokeParticles.length - 1; i >= 0; i--) {
         const p = smokeParticles[i];
         p.life += dt;
-        if (p.life >= p.maxLife) {
-            smokeParticles.splice(i, 1);
-            continue;
-        }
+        if (p.life >= p.maxLife) { smokeParticles.splice(i, 1); continue; }
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.vx *= 0.94;
@@ -178,14 +150,10 @@ function updateParticles(dt) {
         p.r = 5 + (p.maxR - 5) * t;
         p.alpha = (1 - t) * 0.8;
     }
-
     for (let i = starParticles.length - 1; i >= 0; i--) {
         const s = starParticles[i];
         s.life += dt;
-        if (s.life >= s.maxLife) {
-            starParticles.splice(i, 1);
-            continue;
-        }
+        if (s.life >= s.maxLife) { starParticles.splice(i, 1); continue; }
         s.vy += 320 * dt;
         s.x += s.vx * dt;
         s.y += s.vy * dt;
@@ -205,7 +173,7 @@ class Car {
         this.wheelRadius = 15.5;
         this.headRadius = 13.5;
         this.mass = 1.0;
-        this.inertia = 1950;
+        this.inertia = 760;
         this.reset();
     }
 
@@ -222,16 +190,12 @@ class Car {
         this.frontComp = 0;
         this.isKnockedOut = false;
         this.smokeTimer = 0;
-        this.groundedWheels = 0;
     }
 
     localToWorld(lx, ly) {
         const cos = Math.cos(this.angle);
         const sin = Math.sin(this.angle);
-        return {
-            x: this.x + lx * cos - ly * sin,
-            y: this.y + lx * sin + ly * cos
-        };
+        return { x: this.x + lx * cos - ly * sin, y: this.y + lx * sin + ly * cos };
     }
 
     getWheelsWorld() {
@@ -239,25 +203,21 @@ class Car {
         const wRear = this.localToWorld(-halfB, this.wheelYOffset - this.rearComp);
         const wFront = this.localToWorld(halfB, this.wheelYOffset - this.frontComp);
         return [
-            { x: wRear.x, y: wRear.y, r: this.wheelRadius, isRear: true },
-            { x: wFront.x, y: wFront.y, r: this.wheelRadius, isRear: false }
+            { x: wRear.x, y: wRear.y, r: this.wheelRadius, isWheel: true },
+            { x: wFront.x, y: wFront.y, r: this.wheelRadius, isWheel: true }
         ];
     }
 
     getBodyCirclesWorld() {
-        const c1 = this.localToWorld(-24, 2);
-        const c2 = this.localToWorld(0, 3);
-        const c3 = this.localToWorld(24, 2);
         return [
-            { x: c1.x, y: c1.y, r: 15 },
-            { x: c2.x, y: c2.y, r: 15 },
-            { x: c3.x, y: c3.y, r: 15 }
+            { ...this.localToWorld(-24, 2), r: 15, isWheel: false },
+            { ...this.localToWorld(0, 3), r: 15, isWheel: false },
+            { ...this.localToWorld(24, 2), r: 15, isWheel: false }
         ];
     }
 
     getHeadWorld() {
-        const h = this.localToWorld(-3 * this.facing, -20);
-        return { x: h.x, y: h.y, r: this.headRadius };
+        return { ...this.localToWorld(-3 * this.facing, -20), r: this.headRadius };
     }
 }
 
